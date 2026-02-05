@@ -102,6 +102,22 @@ class StashPluginHelper:
             return sc.get("api_key") or sc.get("apiKey") or sc.get("ApiKey")
         return os.getenv("STASH_API_KEY")
 
+    def _session_cookie(self) -> Optional[str]:
+        """Extract session cookie from server_connection to use for authentication."""
+        sc = self.JSON_INPUT.get("server_connection") or self.JSON_INPUT.get("serverConnection") or {}
+        if not isinstance(sc, dict):
+            return None
+        
+        cookie = sc.get("SessionCookie") or sc.get("session_cookie") or sc.get("sessionCookie")
+        if not isinstance(cookie, dict):
+            return None
+        
+        name = cookie.get("Name") or cookie.get("name")
+        value = cookie.get("Value") or cookie.get("value")
+        if name and value:
+            return f"{name}={value}"
+        return None
+
     def _graphql_url(self) -> str:
         # Prefer explicit GraphQL URL if present
         sc = self.JSON_INPUT.get("server_connection") or self.JSON_INPUT.get("serverConnection") or {}
@@ -126,10 +142,17 @@ class StashPluginHelper:
     def _graphql(self, query: str, variables: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         url = self._graphql_url()
         headers = {"Content-Type": "application/json"}
+        
+        # Try API key authentication first
         api_key = self._api_key()
         if api_key:
             headers["ApiKey"] = api_key
             headers["Authorization"] = f"apikey {api_key}"
+        
+        # Add session cookie if available
+        session_cookie = self._session_cookie()
+        if session_cookie:
+            headers["Cookie"] = session_cookie
 
         payload = {"query": query, "variables": variables or {}}
         data = json.dumps(payload).encode("utf-8")
