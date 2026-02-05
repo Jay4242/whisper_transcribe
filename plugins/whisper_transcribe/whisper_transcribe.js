@@ -9,6 +9,213 @@
   // The three‑dot "operations menu" (ID: operation-menu) that contains actions like rescan, generate, etc.
   const OPERATIONS_TOGGLE_ID = 'operation-menu';
 
+  // ============================================================
+  // Toast Notification System
+  // ============================================================
+
+  function showToast(message, type = 'success') {
+    // Method 1: Stash's PluginApi (newer versions)
+    if (window.PluginApi?.libraries?.Toast) {
+      try {
+        if (type === 'success') {
+          window.PluginApi.libraries.Toast.success(message);
+        } else if (type === 'error') {
+          window.PluginApi.libraries.Toast.error(message);
+        } else if (type === 'warning') {
+          window.PluginApi.libraries.Toast.warning(message);
+        } else {
+          window.PluginApi.libraries.Toast.info(message);
+        }
+        return;
+      } catch (e) {
+        console.warn('[WhisperTranscribe] PluginApi Toast failed:', e);
+      }
+    }
+
+    // Method 2: Stash's global stash object (some versions)
+    if (window.stash?.Toast) {
+      try {
+        const toastFn = window.stash.Toast[type] || window.stash.Toast.success;
+        if (typeof toastFn === 'function') {
+          toastFn(message);
+          return;
+        }
+      } catch (e) {
+        console.warn('[WhisperTranscribe] stash.Toast failed:', e);
+      }
+    }
+
+    // Method 3: Look for react-toastify container and dispatch event
+    const toastContainer = document.querySelector('.Toastify');
+    if (toastContainer && window.dispatchEvent) {
+      try {
+        const event = new CustomEvent('stash:toast', {
+          detail: { message, type },
+          bubbles: true,
+        });
+        document.dispatchEvent(event);
+      } catch (e) {
+        console.warn('[WhisperTranscribe] Custom event dispatch failed:', e);
+      }
+    }
+
+    // Method 4: Fallback - create a simple toast element
+    createFallbackToast(message, type);
+  }
+
+  function createFallbackToast(message, type) {
+    // Remove any existing whisper toast
+    const existing = document.getElementById('whisper-transcribe-toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.id = 'whisper-transcribe-toast';
+    toast.textContent = message;
+
+    const bgColor =
+      type === 'error'
+        ? '#dc3545'
+        : type === 'warning'
+          ? '#ffc107'
+          : '#28a745';
+    const textColor = type === 'warning' ? '#212529' : '#ffffff';
+
+    toast.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      padding: 12px 20px;
+      border-radius: 4px;
+      color: ${textColor};
+      font-size: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      z-index: 99999;
+      background-color: ${bgColor};
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      max-width: 350px;
+      word-wrap: break-word;
+    `;
+
+    document.body.appendChild(toast);
+
+    // Trigger animation
+    requestAnimationFrame(() => {
+      toast.style.opacity = '1';
+      toast.style.transform = 'translateY(0)';
+    });
+
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(10px)';
+      setTimeout(() => toast.remove(), 300);
+    }, 5000);
+  }
+
+  // ============================================================
+  // Job Polling System
+  // ============================================================
+
+  async function pollJobStatus(jobId, graphqlURL, description) {
+    const query = `
+      query FindJob($id: ID!) {
+        findJob(input: { id: $id }) {
+          id
+          status
+          subTasks
+          description
+          progress
+          error
+        }
+      }
+    `;
+
+    let pollCount = 0;
+    const maxPolls = 1800; // Max ~1 hour at 2-second intervals
+    const pollInterval = 2000; // 2 seconds
+
+    const poll = async () => {
+      pollCount++;
+
+      if (pollCount > maxPolls) {
+        console.warn('[WhisperTranscribe] Polling timed out after max attempts');
+        showToast('Transcription status unknown (polling timed out)', 'warning');
+        return;
+      }
+
+      try {
+        const res = await fetch(graphqlURL, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, variables: { id: jobId } }),
+        });
+
+        if (!res.ok) {
+          console.warn('[WhisperTranscribe] Poll request failed:', res.status);
+          setTimeout(poll, pollInterval);
+          return;
+        }
+
+        const json = await res.json();
+
+        if (json.errors) {
+          console.warn('[WhisperTranscribe] Poll GraphQL errors:', json.errors);
+          setTimeout(poll, pollInterval);
+          return;
+        }
+
+        const job = json.data?.findJob;
+
+        // Job no longer exists - likely completed and removed from queue
+        if (!job) {
+          console.debug('[WhisperTranscribe] Job no longer in queue, assuming completed');
+          showToast(`Transcription completed: ${description || jobId}`, 'success');
+          return;
+        }
+
+        const status = (job.status || '').toUpperCase();
+
+        if (status === 'FINISHED') {
+          console.debug('[WhisperTranscribe] Job finished successfully');
+          showToast(`Transcription completed: ${description || jobId}`, 'success');
+          return;
+        }
+
+        if (status === 'CANCELLED') {
+          console.debug('[WhisperTranscribe] Job was cancelled');
+          showToast(`Transcription cancelled: ${description || jobId}`, 'warning');
+          return;
+        }
+
+        if (status === 'FAILED') {
+          const errorMsg = job.error || 'Unknown error';
+          console.error('[WhisperTranscribe] Job failed:', errorMsg);
+          showToast(`Transcription failed: ${errorMsg}`, 'error');
+          return;
+        }
+
+        // Still running (READY, RUNNING, etc.) - continue polling
+        console.debug(`[WhisperTranscribe] Job status: ${status}, progress: ${job.progress || 0}%`);
+        setTimeout(poll, pollInterval);
+      } catch (e) {
+        console.error('[WhisperTranscribe] Poll error:', e);
+        // Continue polling on network errors
+        setTimeout(poll, pollInterval);
+      }
+    };
+
+    // Start polling
+    poll();
+  }
+
+  // ============================================================
+  // Core Functions
+  // ============================================================
+
   function getSceneIdFromURL() {
     try {
       // Try pathname first: /scenes/123
@@ -90,20 +297,20 @@
       if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 
       const json = await res.json();
-      if (json.errors || !json.data || !json.data.findScene) return `whisper_transcribe: scene ${sceneId}`;
+      if (json.errors || !json.data || !json.data.findScene) return `scene ${sceneId}`;
 
       const scene = json.data.findScene;
       const filePath = scene.files?.[0]?.path;
       const fileLabel = basename(filePath);
-      if (fileLabel) return `whisper_transcribe: ${fileLabel}`;
+      if (fileLabel) return fileLabel;
 
       const title = (scene.title || '').trim();
-      if (title) return `whisper_transcribe: ${title}`;
+      if (title) return title;
 
-      return `whisper_transcribe: scene ${sceneId}`;
+      return `scene ${sceneId}`;
     } catch (e) {
       console.warn('[WhisperTranscribe] Failed to build job description:', e);
-      return `whisper_transcribe: scene ${sceneId}`;
+      return `scene ${sceneId}`;
     }
   }
 
@@ -121,11 +328,12 @@
     const resolvedId = await resolvePluginId(graphqlURL);
     if (!resolvedId) {
       console.error('[WhisperTranscribe] Could not resolve plugin id. Aborting to avoid server error.');
-      alert('Whisper Transcribe plugin not found on server. Try reloading plugins and refreshing the page.');
+      showToast('Whisper Transcribe plugin not found. Try reloading plugins.', 'error');
       return;
     }
 
-    const description = await buildJobDescription(graphqlURL, sceneId);
+    const sceneLabel = await buildJobDescription(graphqlURL, sceneId);
+    const description = `whisper_transcribe: ${sceneLabel}`;
 
     try {
       const res = await fetch(graphqlURL, {
@@ -138,15 +346,27 @@
       const json = await res.json();
       if (json.errors) {
         console.error('[WhisperTranscribe] GraphQL errors:', json.errors);
-        alert('Failed to start transcription. See console for details.');
+        showToast('Failed to start transcription. See console for details.', 'error');
         return;
       }
-      console.debug('[WhisperTranscribe] Transcription queued as job:', json.data?.runPluginTask);
+
+      const jobId = json.data?.runPluginTask;
+      console.debug('[WhisperTranscribe] Transcription queued as job:', jobId);
+      showToast(`Transcription started: ${sceneLabel}`, 'info');
+
+      // Start polling for job completion
+      if (jobId) {
+        pollJobStatus(jobId, graphqlURL, sceneLabel);
+      }
     } catch (e) {
       console.error('[WhisperTranscribe] Request failed:', e);
-      alert('Failed to start transcription. See console for details.');
+      showToast('Failed to start transcription. See console for details.', 'error');
     }
   }
+
+  // ============================================================
+  // Menu Item Integration
+  // ============================================================
 
   function closeDropdown(menuEl) {
     const dropdown = menuEl?.closest('.dropdown');
@@ -172,7 +392,7 @@
       ev.preventDefault();
       const sceneId = getSceneIdFromURL();
       if (!sceneId) {
-        alert('Whisper Transcribe: could not determine scene id from URL.');
+        showToast('Could not determine scene ID from URL.', 'error');
         return;
       }
       runTranscribe(sceneId);
@@ -219,6 +439,10 @@
     return true;
   }
 
+  // ============================================================
+  // Initialization
+  // ============================================================
+
   // Register as a Stash UI task if possible; fallback to menu item.
   if (typeof window.registerTask === 'function') {
     window.registerTask({
@@ -228,7 +452,7 @@
       handler: async () => {
         const sceneId = getSceneIdFromURL();
         if (!sceneId) {
-          alert('Whisper Transcribe: could not determine scene id from URL.');
+          showToast('Could not determine scene ID from URL.', 'error');
           return;
         }
         await runTranscribe(sceneId);
