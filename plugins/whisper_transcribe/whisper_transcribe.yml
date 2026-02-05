@@ -1,6 +1,6 @@
 name: WhisperTranscribe
-description: Transcribes video (scene) files using a whisper.cpp server.
-version: 0.2.0
+description: Transcribes video (scene) files using Whisper ASR Webservice or Whisper.cpp.
+version: 0.4.0
 url: https://github.com/Jay4242/whisper_transcribe/
 ui:
   css:
@@ -8,9 +8,13 @@ ui:
   javascript:
     - whisper_transcribe.js
 settings:
+  backendType:
+    displayName: Backend Type
+    description: "Choose between Whisper ASR Webservice or Whisper.cpp server"
+    type: STRING
   serverUrl:
     displayName: Whisper Server URL
-    description: "The whisper.cpp server inference endpoint URL. Can also be set via WHISPER_SERVER_URL."
+    description: "The Whisper server endpoint URL. Can also be set via WHISPER_SERVER_URL."
     type: STRING
   translateToEnglish:
     displayName: Translate to English

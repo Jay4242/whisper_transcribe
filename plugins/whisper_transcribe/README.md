@@ -1,7 +1,7 @@
 # Whisper Transcribe Plugin
 
-This Stash plugin automatically generates subtitles for video files using a
-whisper.cpp server.
+This Stash plugin automatically generates subtitles for video files using
+either Whisper ASR Webservice or Whisper.cpp server.
 
 ## Features
 
@@ -19,8 +19,9 @@ whisper.cpp server.
 
 1. Place the `whisper_transcribe` directory inside your Stash plugins folder
    (e.g., `~/.stash/plugins/whisper_transcribe`).
-2. Ensure the whisper.cpp server is running and reachable.
-   - Default URL used by this plugin: `http://127.0.0.1:9191/inference`
+2. Ensure your chosen Whisper backend is running and reachable:
+   - **Whisper ASR Webservice** (default): `http://127.0.0.1:9000/asr`
+   - **Whisper.cpp**: `http://127.0.0.1:9191/inference`
    - Override via the "Whisper Server URL" setting or the `WHISPER_SERVER_URL` environment variable.
 3. Reload plugins from the Stash UI.
 
@@ -28,7 +29,10 @@ whisper.cpp server.
 
 Use the plugin settings in the Stash UI to configure behaviour:
 
-- **serverUrl** – Whisper server inference endpoint (default `http://127.0.0.1:9191/inference`).
+- **backendType** – Choose between `whisper-asr` (Whisper ASR Webservice, default) or `whisper-cpp` (Whisper.cpp server).
+- **serverUrl** – Whisper server endpoint URL. Defaults depend on backend type:
+  - Whisper ASR: `http://127.0.0.1:9000/asr`
+  - Whisper.cpp: `http://127.0.0.1:9191/inference`
 - **translateToEnglish** – Translate transcription to English instead of source language.
 - **zzdebugTracing** – Enable additional debug logs.
 - **zzdryRun** – When enabled, no files are created; actions are only logged.
@@ -38,9 +42,20 @@ You can also set the `WHISPER_SERVER_URL` environment variable to override the s
 The optional `whisper_transcribe_settings.py` remains for advanced overrides.
 
 
+## Backend Comparison
+
+| Feature | Whisper ASR Webservice | Whisper.cpp |
+|---------|----------------------|-------------|
+| Endpoint | `/asr` | `/inference` |
+| Built-in encoding | Yes (`encode=true`) | No |
+| Language detection | Yes (`/detect-language`) | No |
+| Output formats | txt, vtt, srt, tsv, json | srt (via parameter) |
+| Default port | 9000 | 9191 |
+
 ## Troubleshooting
 
-- Connection refused to whisper server: Ensure the server is running and that the "Whisper Server URL" points to the correct host/port. You can set it in the plugin settings or export `WHISPER_SERVER_URL` before launching Stash. The plugin checks reachability before doing any work and logs a clear error if unreachable.
+- **Connection refused to whisper server**: Ensure the server is running and that the "Whisper Server URL" points to the correct host/port. You can set it in the plugin settings or export `WHISPER_SERVER_URL` before launching Stash. The plugin checks reachability before doing any work and logs a clear error if unreachable.
+- **Wrong backend**: Make sure the "Backend Type" setting matches your server (whisper-asr or whisper-cpp).
 - After transcription completes, refresh the scene or navigate away and back to see the new captions appear as an option in the player.
 
 ## Development

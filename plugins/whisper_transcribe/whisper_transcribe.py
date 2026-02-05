@@ -2,7 +2,7 @@
 """
 Whisper Transcribe Plugin
 
-This plugin integrates with a whisper.cpp server
+This plugin integrates with Whisper ASR Webservice or Whisper.cpp
 to automatically generate subtitles (SRT) for video files when a scene is updated.
 It follows the same structure as the example RenameFile plugin.
 """
@@ -104,26 +104,44 @@ def _fetch_server_url_from_settings(json_input: dict) -> str | None:
         return None
 
 # Self-contained transcription logic (no external imports).
-def _post_whisper_audio(wav_path: str, server_url: str, translate: bool) -> str:
+def _post_whisper_audio(wav_path: str, server_url: str, translate: bool, backend_type: str = "whisper-asr") -> str:
     try:
         import requests  # type: ignore
     except Exception:
         requests = None
 
+    # Build request based on backend type
+    if backend_type == "whisper-cpp":
+        # Whisper.cpp format
+        url_with_params = server_url
+        field_name = "file"
+        use_form_data = True
+    else:
+        # Whisper ASR Webservice format (default)
+        task = "translate" if translate else "transcribe"
+        url_with_params = f"{server_url}?output=srt&task={task}&encode=true"
+        field_name = "audio_file"
+        use_form_data = False
+
     if requests is not None:
         with open(wav_path, "rb") as audio_file:
-            files = {"file": (os.path.basename(wav_path), audio_file, "audio/wav")}
-            data = {"response_format": "srt"}
-            if translate:
-                data["translate"] = "true"
+            files = {field_name: (os.path.basename(wav_path), audio_file, "audio/wav")}
+            data = {}
+            if use_form_data:
+                data = {"response_format": "srt"}
+                if translate:
+                    data["translate"] = "true"
             try:
-                resp = requests.post(server_url, files=files, data=data, timeout=3600)
+                resp = requests.post(url_with_params, files=files, data=data, timeout=3600)
                 resp.raise_for_status()
                 return resp.text
             except Exception as e:
                 raise RuntimeError(f"Error sending request to whisper server at {server_url}. Is it running and reachable? {e}") from e
     else:
         boundary = "----WhisperBoundary7MA4YWxkTrZu0gW"
+
+        with open(wav_path, "rb") as f:
+            file_content = f.read()
 
         def _encode_part(name: str, value: str) -> bytes:
             return (
@@ -132,16 +150,15 @@ def _post_whisper_audio(wav_path: str, server_url: str, translate: bool) -> str:
                 f"{value}\r\n"
             ).encode("utf-8")
 
-        with open(wav_path, "rb") as f:
-            file_content = f.read()
-
         parts = []
-        parts.append(_encode_part("response_format", "srt"))
-        if translate:
-            parts.append(_encode_part("translate", "true"))
+        if use_form_data:
+            parts.append(_encode_part("response_format", "srt"))
+            if translate:
+                parts.append(_encode_part("translate", "true"))
+        
         file_header = (
             f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="{os.path.basename(wav_path)}"\r\n'
+            f'Content-Disposition: form-data; name="{field_name}"; filename="{os.path.basename(wav_path)}"\r\n'
             f"Content-Type: audio/wav\r\n\r\n"
         ).encode("utf-8")
         parts.append(file_header)
@@ -151,7 +168,7 @@ def _post_whisper_audio(wav_path: str, server_url: str, translate: bool) -> str:
         body = b"".join(parts)
 
         req = urllib.request.Request(
-            server_url,
+            url_with_params,
             data=body,
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
             method="POST",
@@ -258,9 +275,9 @@ def _trigger_metadata_scan(paths: list[str]) -> None:
         stash.Warn(f"Failed to start metadata scan for captions: {e}")
 
 
-def transcribe_video(video_path: str, translate: bool = False, server_url: str = "http://127.0.01:9191/inference", caption_language: str | None = None) -> str:
+def transcribe_video(video_path: str, translate: bool = False, server_url: str = "http://127.0.0.1:9000/asr", caption_language: str | None = None, backend_type: str = "whisper-asr") -> str:
     """
-    Transcribes a video file using a whisper.cpp server. Produces an .srt next to the video
+    Transcribes a video file using Whisper ASR Webservice or Whisper.cpp. Produces an .srt next to the video
     and returns the caption path.
     """
     if not os.path.exists(video_path):
@@ -293,8 +310,8 @@ def transcribe_video(video_path: str, translate: bool = False, server_url: str =
             stderr = getattr(e, "stderr", "") or ""
             raise RuntimeError(f"ffmpeg failed to extract audio: {stderr}") from e
 
-        # 2. Send audio to whisper.cpp server
-        response_text = _post_whisper_audio(tmp_wav_path, server_url, translate)
+        # 2. Send audio to whisper server
+        response_text = _post_whisper_audio(tmp_wav_path, server_url, translate, backend_type)
 
     finally:
         # Clean up temporary WAV file
@@ -320,6 +337,7 @@ settings = {
     # The server URL is resolved dynamically; we do not set a hard‑coded default here
     # to avoid overriding a user‑provided UI setting. Fallbacks are handled in
     # _resolve_server_url() (environment variable, then built‑in default).
+    "backendType": "whisper-asr",
     "translateToEnglish": False,
     "zzdebugTracing": False,
     "zzdryRun": False,
@@ -401,12 +419,17 @@ def _resolve_server_url() -> str:
     if isinstance(env_url, str) and env_url.strip():
         return env_url.strip()
 
-    # 6️⃣ built‑in default
-    return "http://127.0.0.1:9191/inference"
+    # 6️⃣ built‑in default - choose based on backend type
+    backend = stash.Setting("backendType", "whisper-asr")
+    if backend == "whisper-cpp":
+        return "http://127.0.0.1:9191/inference"
+    else:
+        return "http://127.0.0.1:9000/asr"
 
 # Resolve once at import time (the value is immutable for the lifetime of the run)
 server_url = _resolve_server_url()
 
+backend_type = stash.Setting("backendType", "whisper-asr")
 translate_to_english = stash.Setting("translateToEnglish", False)
 dry_run = stash.Setting("zzdryRun", False)
 # New timeout setting (seconds) – defaults to 3600 seconds if not configured.
@@ -476,6 +499,7 @@ def transcribe_scene(scene_id: int):
                 translate=translate_to_english,
                 server_url=server_url,
                 caption_language=caption_language,
+                backend_type=backend_type,
             )
 
         stash.Log(f"Transcription completed for scene {scene_id} (file: {video_path})")
