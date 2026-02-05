@@ -10,11 +10,8 @@ ui:
 settings:
   backendType:
     displayName: Backend Type
-    description: "Choose between Whisper ASR Webservice or Whisper.cpp server"
-    type: ENUM
-    enum_values:
-      - whisper-asr
-      - whisper-cpp
+    description: "Choose between 'whisper-asr' or 'whisper-cpp'"
+    type: STRING
   serverUrl:
     displayName: Whisper Server URL
     description: "The Whisper server endpoint URL. Can also be set via WHISPER_SERVER_URL."
